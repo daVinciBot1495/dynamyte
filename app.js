@@ -1,9 +1,9 @@
 var _ = require('underscore');
-var crypto = require('crypto');
 var logger = require('morgan');
 var express = require('express');
 var commander = require('commander');
 var bodyParser = require('body-parser');
+var Hasher = require('./lib/hasher').Hasher;
 var NodeMap = require('./lib/node-map').NodeMap;
 
 // Parse the command line arguments
@@ -34,7 +34,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
 var keyValueMap = {};
-var nodeMap = new NodeMap(3, crypto);
+var nodeMap = new NodeMap(1, 3, new Hasher());
 
 _.each(commander.servers, function (server) {
     nodeMap.addNode(server);
@@ -50,7 +50,7 @@ function middleware (req, res, next) {
 	});
     } else {
 	var key = req.body.key;
-	var server = nodeMap.getNodeForKey(key);
+	var server = _.first(nodeMap.getNodesForKey(key));
 
 	// If this is not the server has the value for the key then redirect
 	if (server.indexOf(commander.port) < 0) {
