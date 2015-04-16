@@ -4,7 +4,7 @@ var logger = require('morgan');
 var express = require('express');
 var commander = require('commander');
 var bodyParser = require('body-parser');
-var PartitionMap = require('./lib/partition-map').PartitionMap;
+var NodeMap = require('./lib/node-map').NodeMap;
 
 // Parse the command line arguments
 function list (val) {
@@ -34,10 +34,10 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
 var keyValueMap = {};
-var partitionMap = new PartitionMap(3, crypto);
+var nodeMap = new NodeMap(3, crypto);
 
 _.each(commander.servers, function (server) {
-    partitionMap.addPartition(server);
+    nodeMap.addNode(server);
 });
 
 /**
@@ -50,7 +50,7 @@ function middleware (req, res, next) {
 	});
     } else {
 	var key = req.body.key;
-	var server = partitionMap.getPartitionForKey(key);
+	var server = nodeMap.getNodeForKey(key);
 
 	// If this is not the server has the value for the key then redirect
 	if (server.indexOf(commander.port) < 0) {
