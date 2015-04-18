@@ -1,29 +1,44 @@
 var _ = require('underscore');
 var logger = require('morgan');
 var express = require('express');
+var Promise = require('bluebird');
 var commander = require('commander');
 var bodyParser = require('body-parser');
 var Hasher = require('./lib/hasher').Hasher;
 var NodeMap = require('./lib/node-map').NodeMap;
+var HttpClient = require('./lib/http-client').HttpClient;
+var DynamyteClient = require('./lib/dynamyte-client').DynamyteClient;
 
-// Parse the command line arguments
+/**
+ * Converts a CSV string to a list of strings.
+ */
 function list (val) {
     return val.split(',');
 }
 
-commander.option('-p, --port [port]', 'port')
+/**
+ * Converts a port number to the a server URL.
+ */
+function portToServerUrl (port) {
+    return 'http://localhost:' + port;    
+}
+
+// Paser command line arguments
+commander
+    .option('--partitionSize [partitionSize]', 'partitionSize')
+    .option('-r, --replicas [replicas]', 'replicas')
+    .option('-p, --port [port]', 'port')
     .option('-s, --servers <servers>', 'servers', list)
     .parse(process.argv);
 
-if (!commander.port || !commander.servers) {
+if (!commander.replicas || !commander.partitionSize || !commander.port || !commander.servers) {
     commander.help();
 }
 
+commander.server = portToServerUrl(commander.port);
 commander.servers.push(commander.port);
 commander.servers.sort();
-commander.servers = _.map(commander.servers, function (port) {
-    return 'http://localhost:' + port;
-});
+commander.servers = _.map(commander.servers, portToServerUrl);
 
 // Setup the express service
 var app = express();
@@ -34,7 +49,7 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
 var keyValueMap = {};
-var nodeMap = new NodeMap(1, 3, new Hasher());
+var nodeMap = new NodeMap(commander.partitionSize, commander.replicas, new Hasher());
 
 _.each(commander.servers, function (server) {
     nodeMap.addNode(server);
@@ -48,15 +63,20 @@ function middleware (req, res, next) {
 	res.status(400).json({
 	    message: 'No key provided'
 	});
+    } else if (!_.isBoolean(req.body.quorum)) {
+	res.status(400).json({
+	    message: 'Invalid quorum provided'
+	});
     } else {
 	var key = req.body.key;
-	var server = _.first(nodeMap.getNodesForKey(key));
+	var node = commander.server;
+	var partition = nodeMap.getNodesForKey(key);
 
-	// If this is not the server has the value for the key then redirect
-	if (server.indexOf(commander.port) < 0) {
-	    res.redirect(307, server + req.originalUrl);
-	} else {
+	if (_.contains(partition, node)) {
+	    req.body.partition = _.without(partition, node);
 	    next();
+	} else {
+	    res.redirect(307, _.first(partition) + req.originalUrl);
 	}
     }
 }
@@ -65,6 +85,7 @@ function middleware (req, res, next) {
  * Gets a value from the datastore.
  *
  * @param key {String} A key.
+ * @param quorum {Boolean} Whether or not a quorum read should be performed.
  * @return {Object} A value.
  */
 app.post('/api/get', middleware, function (req, res) {
@@ -84,6 +105,7 @@ app.post('/api/get', middleware, function (req, res) {
  *
  * @param key {String} A key.
  * @param value {Object} A value.
+ * @param quorum {Boolean} Whether or not a quorum read should be performed.
  */
 app.post('/api/put', middleware, function (req, res) {
     if (_.isUndefined(req.body.value)) {
@@ -91,8 +113,34 @@ app.post('/api/put', middleware, function (req, res) {
 	    message: 'No value provided'
 	});
     } else {
-	keyValueMap[req.body.key] = req.body.value;
-	res.send();
+	var key = req.body.key;
+	var value = req.body.value;
+	var quorum = req.body.quorum;
+
+	// Write the value locally
+	keyValueMap[key] = value;
+
+	if (!quorum) {
+	    res.send();
+	} else {
+	    var httpClient = new HttpClient();
+	    var partition = req.body.partition;
+
+	    // Write the value to the other nodes in the partition
+	    var writes = _.map(partition, function (node) {
+		var dynamyte = new DynamyteClient(node, httpClient);
+		return dynamyte.put(key, value, false);
+	    });
+
+	    // If all the writes succeed send a 200, else send a 500
+	    Promise.all(writes).then(function () {
+		res.send();
+	    }).catch(function (error) {
+		res.status(500).json({
+		    message: 'Error writing value to other servers'
+		});
+	    });
+	}
     }
 });
 
