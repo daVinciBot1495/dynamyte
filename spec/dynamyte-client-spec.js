@@ -120,7 +120,7 @@ describe('The Dynamyte client', function () {
 		mockHttpClient.post.andReturn(Promise.resolve([{}, value]));
 	    });
 
-	    it('should return the number', function (done) {
+	    it('should return the object', function (done) {
 		dynamyteClient.get(key, quorum).then(function (resObj) {
 		    expect(resObj).toEqual(obj);
 		    done();
@@ -139,7 +139,7 @@ describe('The Dynamyte client', function () {
 
 	beforeEach(function () {
 	    key = 'key';
-	    quorum = false;
+	    quorum = true;
 	    value = {
 		p1: 'hello',
 		p2: 'world',
