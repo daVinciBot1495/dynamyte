@@ -145,10 +145,10 @@ app.post('/api/get', middleware, function (req, res) {
 	});
 
 	/*
-	 * If R of N - 1 reads succeed find the value with the most recent
+	 * If R - 1 of N - 1 reads succeed find the value with the most recent
 	 * version and return it to the client. Otherwise, send a 500.
 	 */
-	Promise.some(reads, commander.quorumReads).then(function (values) {
+	Promise.some(reads, commander.quorumReads - 1).then(function (values) {
 	    var dsValues = [dsValue].concat(values);
 	    _.sortBy(dsValues, function (value) {
 		return value.context.version;
@@ -215,10 +215,10 @@ app.post('/api/put', middleware, function (req, res) {
 		});
 		
 		/*
-		 * If W of N - 1 writes succeed return the updated context to
-		 * the client. Otherwise, send a 500.
+		 * If W - 1 of N - 1 writes succeed return the updated context
+		 * to the client. Otherwise, send a 500.
 		 */
-		Promise.some(writes, commander.quorumWrites).then(function () {
+		Promise.some(writes, commander.quorumWrites - 1).then(function () {
 		    res.send(dsValue.context);
 		}).catch(function () {
 		    res.status(500).json({
