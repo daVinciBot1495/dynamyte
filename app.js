@@ -82,11 +82,27 @@ function middleware (req, res, next) {
 	});
     } else {
 	var key = req.body.key;
-	var node = commander.server;
 	var partition = nodeMap.getNodesForKey(key);
 
-	if (_.contains(partition, node)) {
-	    req.body.partition = _.without(partition, node);
+	/*
+	 * If it's the correct partition handle the request. Otherwise, redirect
+	 * to the first node of correct partition.
+	 */
+	if (_.contains(partition, commander.server)) {
+	    // Isolate the other nodes in the partition from this server
+	    var partitions = _.partition(partition, function (node) {
+		return node === commander.server;
+	    });
+	    var otherNodes = partitions[1];
+	    var allButOneServerCopies = _.rest(partitions[0], 1);
+	    
+	    /*
+	     * All server copies but one should be added back to the partition.
+	     * In the ideal case, allButOneServerCopies is empty, but it's
+	     * possible that this is not the case. This is necessary to ensure
+	     * the partition passed to the get and put APIs has size N - 1.
+	     */
+	    req.body.partition = otherNodes.concat(allButOneServerCopies);
 	    next();
 	} else {
 	    res.redirect(307, _.first(partition) + req.originalUrl);
@@ -105,13 +121,45 @@ function middleware (req, res, next) {
  * }
  */
 app.post('/api/get', middleware, function (req, res) {
-    var dsValue = keyValueMap[req.body.key];
+    var key = req.body.key;
+    var dsValue = keyValueMap[key];
 
     if (_.isUndefined(dsValue)) {
 	dsValue = new DatastoreValue(undefined, new DatastoreContext());
     }
 
-    res.json(dsValue);
+    if (!req.body.quorum) {
+	res.json(dsValue);
+    } else {
+	var httpClient = new HttpClient();
+	var partition = req.body.partition;
+	
+	// Read the value from the other nodes in the partition
+	var reads = _.map(partition, function (node) {
+	    if (node === commander.server) {
+		return Promise.resolve(dsValue);
+	    } else {
+		var dynamyte = new DynamyteClient(node, httpClient);
+		return dynamyte.get(key, false);
+	    }
+	});
+
+	/*
+	 * If R of N - 1 reads succeed find the value with the most recent
+	 * version and return it to the client. Otherwise, send a 500.
+	 */
+	Promise.some(reads, commander.quorumReads).then(function (values) {
+	    var dsValues = [dsValue].concat(values);
+	    _.sortBy(dsValues, function (value) {
+		return value.context.version;
+	    });
+	    res.json(_.last(dsValues));
+	}).catch (function () {
+	    res.status(500).json({
+		message: 'Error reading value from other servers'
+	    });
+	});
+    }
 });
 
 /**
@@ -135,7 +183,6 @@ app.post('/api/put', middleware, function (req, res) {
     } else {
 	var key = req.body.key;
 	var value = req.body.value;
-	var quorum = req.body.quorum;
 	var context = req.body.context;
 	var dsValue = keyValueMap[key];
 	
@@ -151,7 +198,7 @@ app.post('/api/put', middleware, function (req, res) {
 	} else {
 	    keyValueMap[key] = dsValue;
 
-	    if (!quorum) {
+	    if (!req.body.quorum) {
 		res.send(dsValue.context);
 	    } else {
 		var httpClient = new HttpClient();
@@ -159,14 +206,21 @@ app.post('/api/put', middleware, function (req, res) {
 		
 		// Write the value to the other nodes in the partition
 		var writes = _.map(partition, function (node) {
-		    var dynamyte = new DynamyteClient(node, httpClient);
-		    return dynamyte.put(key, value, false, context);
+		    if (node === commander.server) {
+			return Promise.resolve(dsValue.context);
+		    } else {
+			var dynamyte = new DynamyteClient(node, httpClient);
+			return dynamyte.put(key, value, false, context);
+		    }
 		});
 		
-		// If all the writes succeed send a 200, else send a 500
-		Promise.all(writes).then(function () {
+		/*
+		 * If W of N - 1 writes succeed return the updated context to
+		 * the client. Otherwise, send a 500.
+		 */
+		Promise.some(writes, commander.quorumWrites).then(function () {
 		    res.send(dsValue.context);
-		}).catch(function (error) {
+		}).catch(function () {
 		    res.status(500).json({
 			message: 'Error writing value to other servers'
 		    });
