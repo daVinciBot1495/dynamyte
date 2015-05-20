@@ -62,7 +62,10 @@ app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
 var keyValueMap = {};
-var nodeMap = new NodeMap(commander.partitionSize, commander.replicas, new Hasher());
+var nodeMap = new NodeMap(
+    commander.partitionSize,
+    commander.replicas,
+    new Hasher());
 
 _.each(commander.servers, function (server) {
     nodeMap.addNode(server);
@@ -72,16 +75,17 @@ _.each(commander.servers, function (server) {
  * Common middleware.
  */
 function middleware (req, res, next) {
-    if (_.isUndefined(req.body.key)) {
+    var key = req.params.key || req.body.key;
+    
+    if (_.isUndefined(key)) {
 	res.status(400).json({
-	    message: 'No key provided'
+	    reason: 'No key provided'
 	});
-    } else if (!_.isBoolean(req.body.quorum)) {
+    }/* else if (!_.isBoolean(req.body.quorum)) {
 	res.status(400).json({
-	    message: 'Invalid quorum provided'
+	    reason: 'Invalid quorum provided'
 	});
-    } else {
-	var key = req.body.key;
+    }*/ else {
 	var partition = nodeMap.getNodesForKey(key);
 
 	/*
@@ -111,55 +115,85 @@ function middleware (req, res, next) {
 }
 
 /**
- * Gets a value from the datastore.
+ * Gets a value from the provided node's datastore.
+ *
+ * @param node {String} A node.
+ * @param key {String} A key.
+ * @return {Promise}
+ */
+function get (node, key) {
+    if (node === commander.server) {
+	var dsValue = keyValueMap[key];
+	return _.isUndefined(dsValue) ? Promise.reject({
+	    statusCode: 404,
+	    reason: 'Value for key=' + key + ' not found'
+	}): Promise.resolve({
+	    statusCode: 200,
+	    value: dsValue
+	});
+    } else {
+	var httpClient = new HttpClient();
+	var dynamyte = new DynamyteClient(node, httpClient);
+	return dynamyte.get(key, false);
+    }
+}
+
+/**
+ * Gets a value from this node's datastore.
  *
  * @param key {String} A key.
- * @param quorum {Boolean} Whether or not a quorum read should be performed.
  * @return {Object} A datastore value of the form: {
  *     value: {Object}
  *     context: {Object}
  * }
  */
-app.post('/api/get', middleware, function (req, res) {
-    var key = req.body.key;
-    var dsValue = keyValueMap[key];
+app.get('/no-quorum/val/:key', middleware, function (req, res) {
+    get(commander.server, req.params.key).then(function (resolved) {
+    	res.status(resolved.statusCode).json(resolved.value);
+    }).catch(function (rejected) {
+    	res.status(rejected.statusCode).json(_.omit(rejected, 'statusCode'));
+    });
+});
 
-    if (_.isUndefined(dsValue)) {
-	dsValue = new DatastoreValue(undefined, new DatastoreContext());
-    }
-
-    if (!req.body.quorum) {
-	res.json(dsValue);
-    } else {
-	var httpClient = new HttpClient();
-	var partition = req.body.partition;
+/**
+ * Gets a value from the datastore using quorum reads.
+ *
+ * @param key {String} A key.
+ * @return {Object} A datastore value of the form: {
+ *     value: {Object}
+ *     context: {Object}
+ * }
+ */
+app.get('/val/:key', middleware, function (req, res) {
+    var key = req.params.key;
+    var partition = [commander.server].concat(req.body.partition);
 	
-	// Read the value from the other nodes in the partition
-	var reads = _.map(partition, function (node) {
-	    if (node === commander.server) {
-		return Promise.resolve(dsValue);
-	    } else {
-		var dynamyte = new DynamyteClient(node, httpClient);
-		return dynamyte.get(key, false);
-	    }
-	});
+    // Read the value from the other nodes in the partition
+    var reads = _.map(partition, function (node) {
+	return get(node, key);
+    });
 
-	/*
-	 * If R - 1 of N - 1 reads succeed find the value with the most recent
-	 * version and return it to the client. Otherwise, send a 500.
-	 */
-	Promise.some(reads, commander.quorumReads - 1).then(function (values) {
-	    var dsValues = [dsValue].concat(values);
-	    _.sortBy(dsValues, function (value) {
-		return value.context.version;
-	    });
-	    res.json(_.last(dsValues));
-	}).catch (function () {
-	    res.status(500).json({
-		message: 'Error reading value from other servers'
-	    });
+    /*
+     * If R of N reads succeed find the value with the most recent version and
+     * return it to the client. Otherwise, determine the best status code to
+     * return.
+     */
+    Promise.some(reads, commander.quorumReads).then(function (responses) {
+	var dsValue = _.chain(responses).map(function (response) {
+	    return response.value;
+	}).sortBy(function (value) {
+	    value.context.version;
+	}).last().value();
+	res.json(dsValue);	
+    }).catch (function (error) {
+	var response = _.chain(error).omit('length').values()
+	    .sortBy(function (response) {
+		return response.statusCode;
+	    }).first().value();
+	res.status(response.statusCode).json({
+	    reason: response.reason
 	});
-    }
+    });
 });
 
 /**
@@ -174,11 +208,11 @@ app.post('/api/get', middleware, function (req, res) {
 app.post('/api/put', middleware, function (req, res) {
     if (_.isUndefined(req.body.value)) {
 	res.status(400).json({
-	    message: 'No value provided'
+	    reason: 'No value provided'
 	});
     } else if (_.isUndefined(req.body.context)) {
 	res.status(400).json({
-	    message: 'No context provided'
+	    reason: 'No context provided'
 	});
     } else {
 	var key = req.body.key;
@@ -193,7 +227,7 @@ app.post('/api/put', middleware, function (req, res) {
 	// Write the value locally
 	if (!dsValue.write(value, context)) {
 	    res.status(409).json({
-		message: 'Context is out of date'
+		reason: 'Context is out of date'
 	    });
 	} else {
 	    keyValueMap[key] = dsValue;
@@ -222,7 +256,7 @@ app.post('/api/put', middleware, function (req, res) {
 		    res.send(dsValue.context);
 		}).catch(function () {
 		    res.status(500).json({
-			message: 'Error writing value to other servers'
+			reason: 'Error writing value to other servers'
 		    });
 		});
 	    }
