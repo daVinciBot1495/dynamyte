@@ -12,7 +12,7 @@ describe('The Dynamyte client', function () {
 	    'Content-Type': 'application/json'
 	};
 	serverUrl = 'serverUrl';
-	mockHttpClient = jasmine.createSpyObj('httpClient', ['get', 'post']);
+	mockHttpClient = jasmine.createSpyObj('httpClient', ['get', 'put']);
 	dynamyteClient = new DynamyteClient(serverUrl, mockHttpClient);
     });
 
@@ -22,6 +22,7 @@ describe('The Dynamyte client', function () {
 
 	beforeEach(function () {
 	    key = 'key';
+	    quorum = true;
 	    mockHttpClient.get.andReturn(Promise.resolve([]));
 	});
 
@@ -225,10 +226,10 @@ describe('The Dynamyte client', function () {
 	var key;
 	var value;
 	var quorum;
+	var context;
 
 	beforeEach(function () {
 	    key = 'key';
-	    quorum = true;
 	    value = {
 		p1: 'hello',
 		p2: 'world',
@@ -237,41 +238,151 @@ describe('The Dynamyte client', function () {
 		    a: [1, 2, 3]
 		}
 	    };
-	    mockHttpClient.post.andReturn(Promise.resolve([]));
-	    dynamyteClient.put(key, value, quorum);
-	});
-	
-	it('should properly construct the request', function () {
-	    expect(mockHttpClient.post).toHaveBeenCalledWith(
-		serverUrl + '/api/put',
-		headers,
-		JSON.stringify({
-		    key: key,
-		    value: value,
-		    quorum: quorum
-		})
-	    );
+	    quorum = true;
+	    context = {
+		version: 2
+	    };
 	});
 
-	describe('and there is an error', function () {
-	    var error;
-	    
+	describe('and a quorum is needed', function () {
 	    beforeEach(function () {
-		error = {
-		    message: "I've made a huge mistake"
-		};
-		mockHttpClient.post.andReturn(Promise.reject(error));
+		dynamyteClient.put(key, value, quorum, context);
 	    });
 
-	    it('should return the error', function (done) {
-		dynamyteClient.put(key, value, quorum).then(function (resObj) {
+	    it('should properly construct the request', function () {
+		expect(mockHttpClient.put).toHaveBeenCalledWith(
+		    serverUrl + '/val/' + key,
+		    headers,
+		    JSON.stringify({
+			key: key,
+			value: value,
+			context: context
+		    })
+		);
+	    });
+	});
+
+	describe('and a quorum is not needed', function () {
+	    beforeEach(function () {
+		quorum = false;
+		dynamyteClient.put(key, value, quorum, context);
+	    });
+
+	    it('should properly construct the request', function () {
+		expect(mockHttpClient.put).toHaveBeenCalledWith(
+		    serverUrl + '/no-quorum/val/' + key,
+		    headers,
+		    JSON.stringify({
+			key: key,
+			value: value,
+			context: context
+		    })
+		);
+	    });
+	});
+
+	describe('and the service is unavailable', function () {
+	    beforeEach(function () {
+		mockHttpClient.put.andReturn(Promise.reject());
+	    });
+
+	    it('should reject the promise', function (done) {
+		dynamyteClient.put(key, value, quorum, context).then(function (resObj) {
 		    expect('Promise').toBe('rejected');
 		    done();
-		}).catch(function (err) {
-		    expect(error).toEqual(err);
+		}).catch(function (rejected) {
+		    expect(rejected).toEqual({
+			statusCode: 503,
+			reason: any(String)
+		    });
 		    done();
 		});
 	    });
 	});
-    });    
+
+	describe('and the response code is 400', function () {
+	    var resObj;
+	    var reason;
+	    var statusCode;
+	    
+	    beforeEach(function () {
+		statusCode = 400;
+		reason = "I've made a huge mistake";
+		resObj = {
+		    reason: reason		    
+		};
+		mockHttpClient.put.andReturn(Promise.resolve([{
+		    statusCode: statusCode
+		}, JSON.stringify(resObj)]));
+	    });
+
+	    it('should reject the promise', function (done) {
+		dynamyteClient.put(key, value, quorum, context).then(function (resObj) {
+		    expect('Promise').toBe('rejected');
+		    done();
+		}).catch(function (rejected) {
+		    expect(rejected).toEqual({
+			statusCode: statusCode,
+			reason: reason
+		    });
+		    done();
+		});
+	    });
+	});
+
+	describe('and the response code is greater than 400', function () {
+	    var resObj;
+	    var reason;
+	    var statusCode;
+	    
+	    beforeEach(function () {
+		statusCode = 404;
+		reason = "I've made a huge mistake";
+		resObj = {
+		    reason: reason		    
+		};
+		mockHttpClient.put.andReturn(Promise.resolve([{
+		    statusCode: statusCode
+		}, JSON.stringify(resObj)]));
+	    });
+
+	    it('should reject the promise', function (done) {
+		dynamyteClient.put(key, value, quorum, context).then(function (resObj) {
+		    expect('Promise').toBe('rejected');
+		    done();
+		}).catch(function (rejected) {
+		    expect(rejected).toEqual({
+			statusCode: statusCode,
+			reason: reason
+		    });
+		    done();
+		});
+	    });
+	});
+
+	describe('and the response code is 200', function () {
+	    var reason;
+	    var statusCode;
+	    
+	    beforeEach(function () {
+		statusCode = 200;
+		mockHttpClient.put.andReturn(Promise.resolve([{
+		    statusCode: statusCode
+		}, JSON.stringify(context)]));
+	    });
+
+	    it('should return the updated context', function (done) {
+		dynamyteClient.put(key, value, quorum, context).then(function (resObj) {
+		    expect(resObj).toEqual({
+			statusCode: statusCode,
+			value: context
+		    });
+		    done();
+		}).catch(function (rejected) {
+		    expect('Promise').toBe('resolved');
+		    done();
+		});
+	    });
+	});
+    });
 });
