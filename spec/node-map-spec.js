@@ -82,6 +82,12 @@ describe('The node map', function () {
 	    addNodesToMap();
 	});
 
+	it('should return the first node responsible for storing a given key', function () {
+	    expect(nodeMap.getNodeForKey('00')).toEqual('0');
+	    expect(nodeMap.getNodeForKey('60')).toEqual('6');
+	    expect(nodeMap.getNodeForKey('70')).toEqual('7');
+	});
+	
 	it('should return the nodes responsible for storing a given key', function () {
 	    expect(nodeMap.getNodesForKey('00')).toEqual(['0', '1', '2']);
 	    expect(nodeMap.getNodesForKey('60')).toEqual(['6', '7', '8']);

@@ -6,6 +6,7 @@ var commander = require('commander');
 var bodyParser = require('body-parser');
 var Hasher = require('./lib/hasher').Hasher;
 var NodeMap = require('./lib/node-map').NodeMap;
+var Datastore = require('./lib/datastore').Datastore;
 var HttpClient = require('./lib/http-client').HttpClient;
 var DynamyteClient = require('./lib/dynamyte-client').DynamyteClient;
 var DatastoreValue = require('./lib/datastore-value').DatastoreValue;
@@ -61,11 +62,11 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
-var keyValueMap = {};
 var nodeMap = new NodeMap(
     commander.partitionSize,
     commander.replicas,
     new Hasher());
+var datastore = new Datastore(nodeMap);
 
 _.each(commander.servers, function (server) {
     nodeMap.addNode(server);
@@ -130,7 +131,7 @@ function sendQuorumError(res, error) {
  */
 function get (node, key) {
     if (node === commander.server) {
-	var dsValue = keyValueMap[key];
+	var dsValue = datastore.getValueForKey(key);
 	return _.isUndefined(dsValue) ? Promise.reject({
 	    statusCode: 404,
 	    reason: 'Value for key=' + key + ' not found'
@@ -208,12 +209,11 @@ app.get('/val/:key', middleware, function (req, res) {
  */
 function put (node, key, value, context) {
     if (node === commander.server) {
-	var dsValue = keyValueMap[key];
+	var dsValue = datastore.getValueForKey(key);
 
 	if (_.isUndefined(dsValue)) {
 	    // TODO: Return 404 Not Found once create is implemented
-	    dsValue = new DatastoreValue(undefined, new DatastoreContext());
-	    keyValueMap[key] = dsValue;
+	    dsValue = datastore.createValueForKey(key);
 	}
 
 	// Write the value locally
