@@ -35,7 +35,8 @@ describe('The Dynamyte client', function () {
 	    it('should properly construct the request', function () {
 		expect(mockHttpClient.get).toHaveBeenCalledWith(
 		    serverUrl + '/val/' + key,
-		    headers
+		    headers,
+		    undefined
 		);
 	    });
 	});
@@ -49,7 +50,8 @@ describe('The Dynamyte client', function () {
 	    it('should properly construct the request', function () {
 		expect(mockHttpClient.get).toHaveBeenCalledWith(
 		    serverUrl + '/no-quorum/val/' + key,
-		    headers
+		    headers,
+		    undefined
 		);
 	    });
 	});

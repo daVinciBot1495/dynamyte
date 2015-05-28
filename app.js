@@ -81,38 +81,30 @@ function middleware (req, res, next) {
 	res.status(400).json({
 	    reason: 'No key provided'
 	});
-    }/* else if (!_.isBoolean(req.body.quorum)) {
-	res.status(400).json({
-	    reason: 'Invalid quorum provided'
-	});
-    }*/ else {
+    } else {
 	var partition = nodeMap.getNodesForKey(key);
 
 	/*
 	 * If it's the correct partition handle the request. Otherwise, redirect
-	 * to the first node of correct partition.
+	 * to the first node of the correct partition.
 	 */
 	if (_.contains(partition, commander.server)) {
-	    // Isolate the other nodes in the partition from this server
+	    /*
+	     * It's possible this partition may contain multiple copies of this
+	     * node. We want to move the first copy of the node to be first in
+	     * the partition so all requests are handled locally first, and the
+	     * remaining copies to the end of the partition so other members of
+	     * the quorum are not starved.
+	     * 
+	     */
 	    var partitions = _.partition(partition, function (node) {
 		return node === commander.server;
 	    });
 	    var otherNodes = partitions[1];
 	    var allButOneServerCopies = _.rest(partitions[0], 1);
-	    
-	    /*
-	     * All server copies but one should be added back to the partition.
-	     * In the ideal case, allButOneServerCopies is empty, but it's
-	     * possible that this is not the case. This is necessary to ensure
-	     * the partition passed to the get and put APIs has size N - 1.
-	     */
 	    req.body.partition = otherNodes.concat(allButOneServerCopies);
-
-	    // All operations should happen locally first
 	    req.body.partition = [commander.server].concat(req.body.partition);
-
-	    // Call the next piece of middleware in the chain
-	    next();
+	    next(); // Call the next piece of middleware in the chain
 	} else {
 	    res.redirect(307, _.first(partition) + req.originalUrl);
 	}
@@ -205,6 +197,15 @@ app.get('/val/:key', middleware, function (req, res) {
     });
 });
 
+/**
+ * Puts a value into the provided node's datastore.
+ *
+ * @param node {String} A node.
+ * @param key {String} A key.
+ * @param value {Object} A value.
+ * @param context {Object} The context.
+ * @return {Promise}
+ */
 function put (node, key, value, context) {
     if (node === commander.server) {
 	var dsValue = keyValueMap[key];
@@ -230,6 +231,14 @@ function put (node, key, value, context) {
     }
 }
 
+/**
+ * Puts a value into this node's datastore.
+ *
+ * @param key {String} A key.
+ * @param value {Object} A value.
+ * @param context {Object} The context.
+ * @return {Object} The updated context.
+ */
 app.put('/no-quorum/val/:key', middleware, function (req, res) {
     var key = req.params.key;
     var value = req.body.value;
@@ -252,6 +261,14 @@ app.put('/no-quorum/val/:key', middleware, function (req, res) {
     }
 });
 
+/**
+ * Puts a value into the datastore using quorum writes.
+ *
+ * @param key {String} A key.
+ * @param value {Object} A value.
+ * @param context {Object} The context.
+ * @return {Object} The updated context.
+ */
 app.put('/val/:key', middleware, function (req, res) {
     var key = req.params.key;
     var value = req.body.value;
