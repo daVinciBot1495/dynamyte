@@ -11,6 +11,8 @@ var HttpClient = require('./lib/http-client').HttpClient;
 var DynamyteClient = require('./lib/dynamyte-client').DynamyteClient;
 var DatastoreValue = require('./lib/datastore-value').DatastoreValue;
 var DatastoreContext = require('./lib/datastore-context').DatastoreContext;
+var MerkleTreeBuilder = require('./lib/merkle-tree-builder').MerkleTreeBuilder;
+var MerkleTreeResource = require('./lib/merkle-tree-resource').MerkleTreeResource;
 
 /**
  * Converts a CSV string to a list of strings.
@@ -62,11 +64,18 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: false }));
 
 // Define the service APIs
+var hasher = new Hasher();
 var nodeMap = new NodeMap(
     commander.partitionSize,
     commander.replicas,
-    new Hasher());
-var datastore = new Datastore(nodeMap);
+    hasher);
+var merkleTreeBuilder = new MerkleTreeBuilder(hasher);
+var merkleTreeResource = new MerkleTreeResource(commander.server);
+var datastore = new Datastore(
+    nodeMap,
+    hasher,
+    merkleTreeResource,
+    merkleTreeBuilder);
 
 _.each(commander.servers, function (server) {
     nodeMap.addNode(server);
@@ -209,21 +218,20 @@ app.get('/val/:key', middleware, function (req, res) {
  */
 function put (node, key, value, context) {
     if (node === commander.server) {
-	var dsValue = datastore.getValueForKey(key);
-
-	if (_.isUndefined(dsValue)) {
-	    // TODO: Return 404 Not Found once create is implemented
-	    dsValue = datastore.createValueForKey(key);
-	}
-
 	// Write the value locally
-	return dsValue.write(value, context) ? Promise.resolve({
-	    statusCode: 200,
-	    value: dsValue.context
-	}): Promise.reject({
-	    statusCode: 409,
-	    reason: 'Context for key=' + key + ' is out of date'
-	});
+	var newContext = datastore.putValueForKey(key, value, context);
+
+	if (_.isUndefined(newContext)) {
+	    return Promise.reject({
+		statusCode: 409,
+		reason: 'Context for key=' + key + ' is out of date'
+	    });
+	} else {
+	    return Promise.resolve({
+		statusCode: 200,
+		value: newContext
+	    });
+	}
     } else {
 	var httpClient = new HttpClient();
 	var dynamyte = new DynamyteClient(node, httpClient);
@@ -302,6 +310,40 @@ app.put('/val/:key', middleware, function (req, res) {
 	}).catch (function (error) {
 	    sendQuorumError(res, error);
 	});
+    }
+});
+
+/**
+ * Returns the array of Merkle tree URIs maintained by this node.
+ *
+ * @return {Array} The array of Merkle tree URIs maintained by this node.
+ */
+app.get('/trees', function (req, res) {
+    res.json(datastore.getMerkleTreeUris());
+});
+
+/**
+ * Returns the requested branch of the provided Merkle tree.
+ *
+ * @param treeId {String} The id of the Merkle tree.
+ * @param branchId {String} The id of the Merkle tree's branch.
+ * @return {Object} A tree node object.
+ */
+app.get(merkleTreeResource.getUriTemplateForTreeBranch(), function (req, res) { 
+    var treeId = req.params.treeId;
+    var branchId = req.params.branchId;
+    var tree = datastore.getMerkleTree(treeId);
+
+    if (_.isUndefined(tree)) {
+	res.status(404).json({
+	    reason: 'No Merkle tree found for treeId=' + treeId
+	});
+    } else if (_.isUndefined(tree.getBranch(branchId))) {
+	res.status(404).json({
+	    reason: 'No Merkle tree branch found for branchId=' + branchId
+	});
+    } else {
+	res.json(tree.getBranch(branchId));
     }
 });
 
